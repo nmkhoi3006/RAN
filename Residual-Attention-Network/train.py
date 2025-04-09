@@ -1,138 +1,131 @@
-from __future__ import print_function, division
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.autograd import Variable
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
-import torchvision
-from torchvision import transforms, datasets, models
 import os
-import cv2
-import time
-# from model.residual_attention_network_pre import ResidualAttentionModel
-# based https://github.com/liudaizong/Residual-Attention-Network
-from model.residual_attention_network import ResidualAttentionModel_92_32input_update as ResidualAttentionModel
+import tqdm
+import numpy as np
+from torch.optim import Adam
+from torch import nn
+from torchvision.models import resnet50, ResNet50_Weights
+from torch.utils.data import DataLoader, random_split
+from torchvision.transforms import Compose, ToTensor, Normalize, Resize, ColorJitter, RandomAffine
+from sklearn.metrics import accuracy_score
 
-model_file = 'model_92_sgd.pkl'
-
-
-# for test
-def test(model, test_loader, btrain=False, model_file='model_92.pkl'):
-    # Test
-    if not btrain:
-        model.load_state_dict(torch.load(model_file))
-    model.eval()
-
-    correct = 0
-    total = 0
-    #
-    class_correct = list(0. for i in range(10))
-    class_total = list(0. for i in range(10))
-
-    for images, labels in test_loader:
-        images = Variable(images.cuda())
-        labels = Variable(labels.cuda())
-        outputs = model(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels.data).sum()
-        #
-        c = (predicted == labels.data).squeeze()
-        for i in range(20):
-            label = labels.data[i]
-            class_correct[label] += c[i]
-            class_total[label] += 1
-
-    print('Accuracy of the model on the test images: %d %%' % (100 * float(correct) / total))
-    print('Accuracy of the model on the test images:', float(correct)/total)
-    for i in range(10):
-        print('Accuracy of %5s : %2d %%' % (
-            classes[i], 100 * class_correct[i] / class_total[i]))
-    return correct / total
+from dataset import AIODataset
+from model.residual_attention_network import ResidualAttentionModel_92_32input_update 
+from config import get_config
 
 
-# Image Preprocessing
-transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomCrop((32, 32), padding=4),   #left, top, right, bottom
-    # transforms.Scale(224),
-    transforms.ToTensor()
-])
-test_transform = transforms.Compose([
-    transforms.ToTensor()
-])
-# when image is rgb, totensor do the division 255
-# CIFAR-10 Dataset
-train_dataset = datasets.CIFAR10(root='./data/',
-                               train=True,
-                               transform=transform,
-                               download=True)
+def trainer(config,
+            loss_fn,
+            model,
+            optimizer,
+            train_loader,
+            val_loader,
+            num_epochs,
+            device):
+    order = config["order"]
+    save_folder = os.path.join(config["save_model"], f"save_{order}")
+    if not os.path.exists(save_folder):
+        os.mkdir(save_folder)
 
-test_dataset = datasets.CIFAR10(root='./data/',
-                              train=False,
-                              transform=test_transform)
+    best_acc = 0
+    for epoch in range(num_epochs):
+        progress_bar = tqdm.tqdm(train_loader)
 
-# Data Loader (Input Pipeline)
-train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
-                                           batch_size=64, # 64
-                                           shuffle=True, num_workers=8)
-test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
-                                          batch_size=20,
-                                          shuffle=False)
-
-classes = ('plane', 'car', 'bird', 'cat',
-           'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-model = ResidualAttentionModel().cuda()
-print(model)
-
-lr = 0.1  # 0.1
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, nesterov=True, weight_decay=0.0001)
-is_train = True
-is_pretrain = False
-acc_best = 0
-total_epoch = 300
-if is_train is True:
-    if is_pretrain == True:
-        model.load_state_dict((torch.load(model_file)))
-    # Training
-    for epoch in range(total_epoch):
         model.train()
-        tims = time.time()
-        for i, (images, labels) in enumerate(train_loader):
-            images = Variable(images.cuda())
-            # print(images.data)
-            labels = Variable(labels.cuda())
+        train_loss = []
+        for image, label in progress_bar:
+            image = image.to(device)
+            label = label.to(device)
 
-            # Forward + Backward + Optimize
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            # print("hello")
-            if (i+1) % 100 == 0:
-                print("Epoch [%d/%d], Iter [%d/%d] Loss: %.4f" %(epoch+1, total_epoch, i+1, len(train_loader), loss.data[0]))
-        print('the epoch takes time:',time.time()-tims)
-        print('evaluate test set:')
-        acc = test(model, test_loader, btrain=True)
-        if acc > acc_best:
-            acc_best = acc
-            print('current best acc,', acc_best)
-            torch.save(model.state_dict(), model_file)
-        # Decaying Learning Rate
-        if (epoch+1) / float(total_epoch) == 0.3 or (epoch+1) / float(total_epoch) == 0.6 or (epoch+1) / float(total_epoch) == 0.9:
-            lr /= 10
-            print('reset learning rate to:', lr)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-                print(param_group['lr'])
-            # optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-            # optim.SGD(model.parameters(), lr=lr, momentum=0.9, nesterov=True, weight_decay=0.0001)
-    # Save the Model
-    torch.save(model.state_dict(), 'last_model_92_sgd.pkl')
+            output = model(image)
+    
+            loss = loss_fn(output, label)
+            # loss.backward()
+            # optimizer.step()
 
-else:
-    test(model, test_loader, btrain=False)
+            train_loss.append(loss.item())
+            progress_bar.set_description(f"Epoch {epoch + 1}/{num_epochs}, Loss: {np.mean(train_loss):0.3f}")
+
+
+        # VALIDATION
+        model.eval()
+        val_loss = []
+        labels = []
+        predictions = []
+        with torch.no_grad():
+            for image, label in val_loader:
+                image = image.to(device)
+                label = label.to(device)
+
+                output = model(image)
+                loss = loss_fn(output, label)
+
+                val_loss.append(loss.item())
+
+                predict_class = torch.argmax(output, dim=1)
+                predictions.extend(predict_class.cpu().numpy())
+                labels.extend(label.cpu().numpy())
+
+        acc = accuracy_score(labels, predictions)
+        print(f"Epoch {epoch + 1}/{num_epochs}, Validation Loss: {np.mean(val_loss):0.3f}")
+        print(f"Epoch {epoch + 1}/{num_epochs}, Validation Accuracy: {acc:0.3f}")
+        
+        check_point ={
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_acc': acc,
+        }
+
+        torch.save(check_point, os.path.join(save_folder, "last_model.pth"))
+
+        if acc > best_acc:
+            best_acc = acc
+            torch.save(check_point, os.path.join(save_folder, 'best_model.pth'))
+    
+
+
+if __name__ == "__main__":
+    config = get_config()
+
+    transform_train = Compose([
+        ToTensor(),
+        ColorJitter(brightness=0.6, contrast=0.6, saturation=0.6, hue=0.2),
+        RandomAffine(degrees=30, translate=(0.2, 0.2), scale=(1.2, 1.5), shear=10)
+    ])
+
+    transform_val = ToTensor()
+    ds = AIODataset(root=config["root"], split='train')
+
+    len_train = int(0.9 * len(ds))
+    len_val = len(ds) - len_train
+    train_dataset, val_dataset = random_split(ds, [len_train, len_val])
+
+    train_dataset.dataset.transform_image = transform_train
+    val_dataset.dataset.transform_image = transform_val
+
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=config["batch_size"], shuffle=config["shuffle"], num_workers=config["num_workers"],
+    )
+
+    val_loader = DataLoader(
+        val_dataset, batch_size=config["batch_size"], shuffle=config["shuffle"], num_workers=config["num_workers"]
+    )
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = ResidualAttentionModel_92_32input_update().to(device)
+
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=config["label_smoothing"])
+    optimizer = Adam(model.parameters(), lr=config["lr"])
+    trainer(config,
+            loss_fn,
+            model,
+            optimizer,
+            train_loader,
+            val_loader,
+            config["num_epochs"],
+            device=device)
+    print(model)
 
